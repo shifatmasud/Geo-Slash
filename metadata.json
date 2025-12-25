@@ -1,0 +1,5 @@
+{
+  "name": "Geo-Slash",
+  "description": "Three.js 3D geometry slash game inspired by fruit ninja ",
+  "requestFramePermissions": []
+}
