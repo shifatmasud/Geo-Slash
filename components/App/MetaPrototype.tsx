@@ -169,7 +169,7 @@ const MetaPrototype = () => {
   return (
     <div style={{
       width: '100vw',
-      height: '100vh',
+      height: '100%',
       backgroundColor: theme.Color.Base.Surface[1],
       overflow: 'hidden',
       position: 'relative',
