@@ -37,11 +37,19 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ config, onConfigChange }) =
           </div>
       </div>
 
-      <Toggle 
-        label={config.isPlaying ? "System Active" : "System Paused"} 
-        isOn={config.isPlaying} 
-        onToggle={() => onConfigChange({ isPlaying: !config.isPlaying })} 
-      />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: theme.spacing['Space.M'] }}>
+        <Toggle 
+          label={config.isPlaying ? "System Active" : "System Paused"} 
+          isOn={config.isPlaying} 
+          onToggle={() => onConfigChange({ isPlaying: !config.isPlaying })} 
+        />
+        
+        <Toggle 
+          label="Hand Tracking" 
+          isOn={config.useHandTracking} 
+          onToggle={() => onConfigChange({ useHandTracking: !config.useHandTracking })} 
+        />
+      </div>
 
       <div style={{ borderTop: `1px solid ${theme.Color.Base.Surface[3]}`, margin: `${theme.spacing['Space.L']} 0` }} />
 

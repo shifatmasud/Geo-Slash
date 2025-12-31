@@ -33,4 +33,5 @@ export interface GameConfig {
     score: number;
     lives: number;
     gameOver: boolean;
+    useHandTracking: boolean;
 }

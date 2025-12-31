@@ -34,7 +34,8 @@ const MetaPrototype = () => {
     isPlaying: true,
     score: 0,
     lives: 3,
-    gameOver: false
+    gameOver: false,
+    useHandTracking: false
   });
   
   // -- Game State --

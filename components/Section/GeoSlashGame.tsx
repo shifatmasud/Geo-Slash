@@ -3,12 +3,44 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import React, { useEffect, useRef, useState } from 'react';
-import * as THREE from 'three';
+import {
+    Object3D,
+    Vector3,
+    Color,
+    Scene,
+    PerspectiveCamera,
+    WebGLRenderer,
+    ACESFilmicToneMapping,
+    AmbientLight,
+    DirectionalLight,
+    HemisphereLight,
+    BoxGeometry,
+    ConeGeometry,
+    SphereGeometry,
+    TetrahedronGeometry,
+    CylinderGeometry,
+    MeshBasicMaterial,
+    MeshStandardMaterial,
+    MeshPhysicalMaterial,
+    Mesh,
+    Group,
+    Raycaster,
+    Vector2,
+    InstancedMesh,
+    DynamicDrawUsage,
+    AdditiveBlending,
+    BufferGeometry,
+    BufferAttribute,
+    DoubleSide,
+    Quaternion,
+    Material
+} from 'three';
 import * as CANNON from 'cannon-es';
 import { useTheme } from '../../Theme.tsx';
 import { GameConfig } from '../../types/index.tsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import Button from '../Core/Button.tsx';
+import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
 // --- Types ---
 
@@ -24,29 +56,29 @@ type MaterialType = 'PLASTIC' | 'GLASS' | 'BOMB_MATTE' | 'BOMB_FUSE' | 'BOMB_CAP
 
 interface GameEntity {
     id: number;
-    mesh: THREE.Object3D;
+    mesh: Object3D;
     body: CANNON.Body;
     type: 'TARGET' | 'BOMB' | 'DEBRIS';
     active: boolean;
-    fuseTipOffset?: THREE.Vector3;
+    fuseTipOffset?: Vector3;
 }
 
 interface Particle {
-    position: THREE.Vector3;
-    velocity: THREE.Vector3;
+    position: Vector3;
+    velocity: Vector3;
     life: number;
     maxLife: number;
     size: number;
-    color: THREE.Color;
+    color: Color;
 }
 
 interface TrailNode {
-    position: THREE.Vector3;
+    position: Vector3;
     life: number;
 }
 
 /**
- * ⚔️ GEO-SLASH: ENGINE V7.1 (3D Particles)
+ * ⚔️ GEO-SLASH: ENGINE V7.1 (3D Particles + Hand Tracking)
  * 
  * Implements:
  * 1. Physics: Cannon.js for rigid body simulation.
@@ -54,19 +86,22 @@ interface TrailNode {
  * 3. Shatter: Physical debris generation (shards) on slash.
  * 4. Trail: Continuous ribbon trail.
  * 5. Particles: Volumetric sphere particles for explosions and sparks.
+ * 6. Input: Mouse/Touch OR MediaPipe Hand Tracking.
  */
-const FUSE_TIP_OFFSET = new THREE.Vector3(0.04, 1.1, 0);
+const FUSE_TIP_OFFSET = new Vector3(0.04, 1.1, 0);
 
 const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, onBomb, onRestart }) => {
     const containerRef = useRef<HTMLDivElement>(null);
+    const videoRef = useRef<HTMLVideoElement>(null);
     const { theme } = useTheme();
     const [flash, setFlash] = useState<'red' | 'white' | null>(null);
+    const [handTrackingReady, setHandTrackingReady] = useState(false);
 
     // --- Engine Refs ---
     const engine = useRef({
-        scene: null as THREE.Scene | null,
-        camera: null as THREE.PerspectiveCamera | null,
-        renderer: null as THREE.WebGLRenderer | null,
+        scene: null as Scene | null,
+        camera: null as PerspectiveCamera | null,
+        renderer: null as WebGLRenderer | null,
         world: null as CANNON.World | null,
         
         entities: [] as GameEntity[],
@@ -74,16 +109,20 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
         
         // Trail System
         trailNodes: [] as TrailNode[],
-        trailMesh: null as THREE.Mesh | null,
+        trailMesh: null as Mesh | null,
         
         // Resources (Pooling)
-        geometries: {} as Record<string, THREE.BufferGeometry>,
-        materials: {} as Record<string, THREE.Material>,
+        geometries: {} as Record<string, BufferGeometry>,
+        materials: {} as Record<string, Material>,
         
         // Systems
-        raycaster: new THREE.Raycaster(),
-        mouse: new THREE.Vector2(),
-        lastMouse: null as THREE.Vector2 | null,
+        raycaster: new Raycaster(),
+        mouse: new Vector2(),
+        lastMouse: null as Vector2 | null,
+        
+        // Hand Tracking
+        handLandmarker: null as HandLandmarker | null,
+        lastVideoTime: -1,
         
         // State
         lastTime: 0,
@@ -101,6 +140,83 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
         }
     }, [config]);
 
+    // --- MediaPipe Hand Tracking Setup ---
+    useEffect(() => {
+        let active = true;
+
+        const setupHandTracking = async () => {
+            if (!config.useHandTracking) {
+                if (videoRef.current && videoRef.current.srcObject) {
+                    const stream = videoRef.current.srcObject as MediaStream;
+                    stream.getTracks().forEach(track => track.stop());
+                    videoRef.current.srcObject = null;
+                }
+                setHandTrackingReady(false);
+                return;
+            }
+
+            if (!engine.current.handLandmarker) {
+                 try {
+                     const vision = await FilesetResolver.forVisionTasks(
+                         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm"
+                     );
+                     
+                     if (!active) return;
+                     
+                     engine.current.handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                         baseOptions: {
+                             modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                             delegate: "GPU"
+                         },
+                         runningMode: "VIDEO",
+                         numHands: 1
+                     });
+                 } catch (err) {
+                     console.error("Failed to initialize hand tracking:", err);
+                     return;
+                 }
+            }
+
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { 
+                            facingMode: "user",
+                            width: 320,
+                            height: 240
+                        } 
+                    });
+                    
+                    if (!active) {
+                        stream.getTracks().forEach(track => track.stop());
+                        return;
+                    }
+
+                    if (videoRef.current) {
+                        videoRef.current.srcObject = stream;
+                        videoRef.current.addEventListener('loadeddata', () => {
+                            if(active) setHandTrackingReady(true);
+                        });
+                    }
+                } catch (err) {
+                    console.error("Camera access denied:", err);
+                }
+            }
+        };
+
+        setupHandTracking();
+
+        return () => {
+            active = false;
+            // Cleanup stream handled above or on unmount
+            if (videoRef.current && videoRef.current.srcObject) {
+                const stream = videoRef.current.srcObject as MediaStream;
+                stream.getTracks().forEach(track => track.stop());
+            }
+        };
+    }, [config.useHandTracking]);
+
+
     useEffect(() => {
         if (!containerRef.current) return;
 
@@ -108,22 +224,22 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
         const width = containerRef.current.clientWidth;
         const height = containerRef.current.clientHeight;
 
-        const scene = new THREE.Scene();
+        const scene = new Scene();
         // Transparent background for "Score behind everything"
         scene.background = null; 
 
-        const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 100);
+        const camera = new PerspectiveCamera(60, width / height, 0.1, 100);
         camera.position.set(0, 0, 18);
         camera.lookAt(0, 0, 0);
 
-        const renderer = new THREE.WebGLRenderer({ 
+        const renderer = new WebGLRenderer({ 
             antialias: false, 
             alpha: true, // Enable transparency
             powerPreference: 'high-performance'
         });
         renderer.setSize(width, height);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMapping = ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.0;
         // Make renderer sit above the background text
         renderer.domElement.style.position = 'absolute';
@@ -148,74 +264,74 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
         engine.current.world = world;
 
         // --- 3. Lighting ---
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8); 
+        const ambientLight = new AmbientLight(0xffffff, 0.8); 
         scene.add(ambientLight);
 
-        const dirLight = new THREE.DirectionalLight(0xfff0dd, 2.5);
+        const dirLight = new DirectionalLight(0xfff0dd, 2.5);
         dirLight.position.set(10, 20, 10);
         scene.add(dirLight);
 
-        const hemiLight = new THREE.HemisphereLight(0xddeeff, 0x222222, 0.5);
+        const hemiLight = new HemisphereLight(0xddeeff, 0x222222, 0.5);
         scene.add(hemiLight);
 
         // --- 4. Resources ---
         const geoms = {
-            cube: new THREE.BoxGeometry(1, 1, 1),
+            cube: new BoxGeometry(1, 1, 1),
             // Square based pyramid: Cone with 4 radial segments
-            pyramid: new THREE.ConeGeometry(0.8, 1.4, 4, 1), 
-            sphere: new THREE.SphereGeometry(0.6, 32, 32),
+            pyramid: new ConeGeometry(0.8, 1.4, 4, 1), 
+            sphere: new SphereGeometry(0.6, 32, 32),
             // Debris Shards
-            shardBox: new THREE.BoxGeometry(0.5, 0.5, 0.5),
-            shardTetra: new THREE.TetrahedronGeometry(0.4),
+            shardBox: new BoxGeometry(0.5, 0.5, 0.5),
+            shardTetra: new TetrahedronGeometry(0.4),
             // BOMB PARTS
-            bombBody: new THREE.SphereGeometry(0.65, 32, 32),
-            bombCap: new THREE.CylinderGeometry(0.2, 0.25, 0.25, 16),
-            bombFuse: new THREE.CylinderGeometry(0.04, 0.04, 0.4, 8),
+            bombBody: new SphereGeometry(0.65, 32, 32),
+            bombCap: new CylinderGeometry(0.2, 0.25, 0.25, 16),
+            bombFuse: new CylinderGeometry(0.04, 0.04, 0.4, 8),
         };
         geoms.pyramid.rotateX(Math.PI); // Point up naturally
         engine.current.geometries = geoms;
 
         // --- 5. Particle System ---
         const MAX_PARTICLES = 1000;
-        const particleGeo = new THREE.SphereGeometry(0.1, 8, 8); // 3D sphere particles
-        const particleMat = new THREE.MeshBasicMaterial({
+        const particleGeo = new SphereGeometry(0.1, 8, 8); // 3D sphere particles
+        const particleMat = new MeshBasicMaterial({
             color: 0xffffff,
             transparent: true,
-            blending: THREE.AdditiveBlending,
+            blending: AdditiveBlending,
             depthWrite: false,
         });
-        const particleMesh = new THREE.InstancedMesh(particleGeo, particleMat, MAX_PARTICLES);
-        particleMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        const particleMesh = new InstancedMesh(particleGeo, particleMat, MAX_PARTICLES);
+        particleMesh.instanceMatrix.setUsage(DynamicDrawUsage);
         scene.add(particleMesh);
 
         // --- 6. Trail Mesh ---
         // Using a strip of triangles for a smooth trail
         const TRAIL_LENGTH = 30;
-        const trailGeometry = new THREE.BufferGeometry();
+        const trailGeometry = new BufferGeometry();
         const positions = new Float32Array(TRAIL_LENGTH * 3 * 2); // 2 vertices per segment
-        trailGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        const trailMaterial = new THREE.MeshBasicMaterial({
+        trailGeometry.setAttribute('position', new BufferAttribute(positions, 3));
+        const trailMaterial = new MeshBasicMaterial({
             color: theme.Color.Accent.Content[1],
-            side: THREE.DoubleSide,
+            side: DoubleSide,
             transparent: true,
             opacity: 0.6,
-            blending: THREE.AdditiveBlending,
+            blending: AdditiveBlending,
         });
-        const trailMesh = new THREE.Mesh(trailGeometry, trailMaterial);
+        const trailMesh = new Mesh(trailGeometry, trailMaterial);
         trailMesh.frustumCulled = false;
         scene.add(trailMesh);
         engine.current.trailMesh = trailMesh;
 
         // --- Helpers ---
 
-        const getMaterial = (color: string, type: MaterialType): THREE.Material => {
+        const getMaterial = (color: string, type: MaterialType): Material => {
             const key = `${color}_${type}`;
             if (engine.current.materials[key]) return engine.current.materials[key];
 
             let mat;
             switch (type) {
                 case 'GLASS':
-                    mat = new THREE.MeshPhysicalMaterial({
+                    mat = new MeshPhysicalMaterial({
                         color: 0xffffff,          // Keep colorless
                         metalness: 0.1,           // Add slight reflection
                         roughness: 0.1,           // Add slight blur/frost
@@ -223,25 +339,25 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                         thickness: 1.5,           // Enhance refraction
                         ior: 1.5,                 // Index of Refraction for glass
                         transparent: true,
-                        side: THREE.DoubleSide,
+                        side: DoubleSide,
                     });
                     break;
                 case 'BOMB_MATTE':
-                    mat = new THREE.MeshStandardMaterial({
+                    mat = new MeshStandardMaterial({
                         color: 0x222222, // Dark metal
                         roughness: 0.5,  // Less rough
                         metalness: 1.0,  // Fully metallic
                     });
                     break;
                 case 'BOMB_CAP':
-                     mat = new THREE.MeshStandardMaterial({
+                     mat = new MeshStandardMaterial({
                         color: 0xbbbbbb, // A lighter, shinier metal
                         roughness: 0.1,  // Very shiny
                         metalness: 1.0,  // Fully metallic
                     });
                     break;
                 case 'BOMB_FUSE':
-                     mat = new THREE.MeshStandardMaterial({
+                     mat = new MeshStandardMaterial({
                         color: 0x8B4513,
                         roughness: 1.0,
                         metalness: 0.0,
@@ -250,11 +366,11 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                     });
                     break;
                 case 'EMISSIVE':
-                     mat = new THREE.MeshBasicMaterial({ color: color });
+                     mat = new MeshBasicMaterial({ color: color });
                      break;
                 case 'PLASTIC':
                 default:
-                    mat = new THREE.MeshStandardMaterial({
+                    mat = new MeshStandardMaterial({
                         color: color,
                         roughness: 0.2,
                         metalness: 0.0,
@@ -291,21 +407,21 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
         };
 
         const createBombVisual = () => {
-            const group = new THREE.Group();
-            const body = new THREE.Mesh(geoms.bombBody, getMaterial('#222222', 'BOMB_MATTE'));
+            const group = new Group();
+            const body = new Mesh(geoms.bombBody, getMaterial('#222222', 'BOMB_MATTE'));
             group.add(body);
-            const cap = new THREE.Mesh(geoms.bombCap, getMaterial('#888888', 'BOMB_CAP'));
+            const cap = new Mesh(geoms.bombCap, getMaterial('#888888', 'BOMB_CAP'));
             cap.position.y = 0.65;
             group.add(cap);
-            const fuse = new THREE.Mesh(geoms.bombFuse, getMaterial('#8B4513', 'BOMB_FUSE'));
+            const fuse = new Mesh(geoms.bombFuse, getMaterial('#8B4513', 'BOMB_FUSE'));
             fuse.position.y = 0.9;
             fuse.rotation.z = 0.1;
             group.add(fuse);
             return group;
         };
 
-        const spawnEntity = (isDebris = false, debrisProps?: { pos: THREE.Vector3, vel: THREE.Vector3, color: string, isGlass: boolean }) => {
-            let mesh: THREE.Object3D;
+        const spawnEntity = (isDebris = false, debrisProps?: { pos: Vector3, vel: Vector3, color: string, isGlass: boolean }) => {
+            let mesh: Object3D;
             let body: CANNON.Body;
             let type: 'TARGET' | 'BOMB' | 'DEBRIS' = 'TARGET';
             let color = '#ffffff';
@@ -318,7 +434,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                 // @ts-ignore
                 const geometry = geoms[shapeKey];
                 const material = getMaterial(color, debrisProps.isGlass ? 'GLASS' : 'PLASTIC');
-                mesh = new THREE.Mesh(geometry, material);
+                mesh = new Mesh(geometry, material);
                 
                 const size = 0.5 * (0.5 + Math.random() * 0.5); // Random small size
                 mesh.scale.setScalar(size);
@@ -363,7 +479,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                     const shapeKey = shapes[Math.floor(Math.random() * shapes.length)] as 'cube' | 'pyramid' | 'sphere';
                     const geometry = geoms[shapeKey];
                     const material = getMaterial(color, isGlass ? 'GLASS' : 'PLASTIC');
-                    mesh = new THREE.Mesh(geometry, material);
+                    mesh = new Mesh(geometry, material);
                     mesh.scale.setScalar(size);
                     body = createBody(shapeKey, size);
                 }
@@ -399,17 +515,17 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             });
         };
 
-        const spawnExplosionParticles = (pos: THREE.Vector3) => {
+        const spawnExplosionParticles = (pos: Vector3) => {
             const explosionColors = [
-                new THREE.Color('#FFFFFF'), 
-                new THREE.Color('#FFD700'), 
-                new THREE.Color('#FFA500'), 
-                new THREE.Color('#FF4500')
+                new Color('#FFFFFF'), 
+                new Color('#FFD700'), 
+                new Color('#FFA500'), 
+                new Color('#FF4500')
             ];
             const count = 100;
             for (let i = 0; i < count; i++) {
                 const speed = 15 + Math.random() * 15;
-                const velocity = new THREE.Vector3(
+                const velocity = new Vector3(
                     (Math.random() - 0.5),
                     (Math.random() - 0.5),
                     (Math.random() - 0.5)
@@ -428,13 +544,13 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             }
         };
 
-        const shatterEntity = (entity: GameEntity, hitPoint: THREE.Vector3) => {
+        const shatterEntity = (entity: GameEntity, hitPoint: Vector3) => {
             // Remove original
             entity.active = false;
             scene.remove(entity.mesh);
             world.removeBody(entity.body);
             
-            const entityPos = new THREE.Vector3(entity.body.position.x, entity.body.position.y, entity.body.position.z);
+            const entityPos = new Vector3(entity.body.position.x, entity.body.position.y, entity.body.position.z);
 
             if (entity.type === 'BOMB') {
                 spawnExplosionParticles(entityPos);
@@ -443,20 +559,20 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                 let color = '#ffffff';
                 let isGlass = false;
                 
-                if (entity.mesh instanceof THREE.Mesh) {
-                    const mat = entity.mesh.material as THREE.MeshStandardMaterial;
+                if (entity.mesh instanceof Mesh) {
+                    const mat = entity.mesh.material as MeshStandardMaterial;
                     // @ts-ignore
                     if (mat.color) color = '#' + mat.color.getHexString();
-                    isGlass = mat instanceof THREE.MeshPhysicalMaterial;
+                    isGlass = mat instanceof MeshPhysicalMaterial;
                 }
     
                 // Spawn Shards (Debris)
                 const shardCount = 4 + Math.floor(Math.random() * 3);
-                const originalVel = new THREE.Vector3(entity.body.velocity.x, entity.body.velocity.y, entity.body.velocity.z);
+                const originalVel = new Vector3(entity.body.velocity.x, entity.body.velocity.y, entity.body.velocity.z);
                 
                 for (let i = 0; i < shardCount; i++) {
                     const spread = 8;
-                    const debrisVel = originalVel.clone().add(new THREE.Vector3(
+                    const debrisVel = originalVel.clone().add(new Vector3(
                         (Math.random() - 0.5) * spread,
                         (Math.random() - 0.5) * spread,
                         (Math.random() - 0.5) * spread
@@ -469,12 +585,12 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             }
         };
 
-        const spawnParticles = (pos: THREE.Vector3, colorHex: string | number, count: number = 15) => {
-            const col = new THREE.Color(colorHex);
+        const spawnParticles = (pos: Vector3, colorHex: string | number, count: number = 15) => {
+            const col = new Color(colorHex);
             for(let i=0; i<count; i++) {
                 engine.current.particles.push({
                     position: pos.clone(),
-                    velocity: new THREE.Vector3(
+                    velocity: new Vector3(
                         (Math.random() - 0.5) * 10,
                         (Math.random() - 0.5) * 10,
                         (Math.random() - 0.5) * 10
@@ -487,6 +603,84 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             }
         };
 
+        // --- Core Slash Logic (Abstracted) ---
+        const processSlashInput = (nx: number, ny: number) => {
+             const state = engine.current;
+             if (!state.camera || !containerRef.current || configRef.current.gameOver) return;
+
+             // Unproject for 3D Trail
+             const vec = new Vector3(nx, ny, 0.5);
+             vec.unproject(state.camera);
+             const dir = vec.sub(state.camera.position).normalize();
+             const distance = -state.camera.position.z / dir.z; // Intersection with Z=0 plane
+             const worldPos = state.camera.position.clone().add(dir.multiplyScalar(distance));
+
+             // Add Trail Node
+             state.trailNodes.unshift({ position: worldPos, life: 1.0 });
+             if (state.trailNodes.length > 30) state.trailNodes.pop();
+
+             const currentPos = new Vector2(nx, ny);
+
+             if (!state.lastMouse) {
+                 state.lastMouse = currentPos.clone();
+                 return;
+             }
+
+             // Raycasting
+             state.raycaster.setFromCamera(currentPos, state.camera);
+             
+             // Collect target meshes
+             const targets: Object3D[] = [];
+             state.entities.forEach(e => {
+                 if (e.active && e.type !== 'DEBRIS') {
+                    targets.push(e.mesh instanceof Group ? e.mesh.children[0] : e.mesh);
+                 }
+             });
+
+             const hits = state.raycaster.intersectObjects(targets, true); // Recursive true for groups
+
+             if (hits.length > 0) {
+                 // Find the parent entity of the hit mesh
+                 const hitObj = hits[0].object;
+                 const ent = state.entities.find(e => 
+                    e.mesh === hitObj || 
+                    (e.mesh instanceof Group && e.mesh.children.includes(hitObj))
+                 );
+
+                 if (ent && ent.active) {
+                     // HIT
+                     if (ent.type === 'BOMB') {
+                         onBomb();
+                         setFlash('red');
+                         setTimeout(() => setFlash(null), 100);
+                         state.shakeStrength = 1.2; 
+                         shatterEntity(ent, hits[0].point);
+                     } else {
+                         // Score
+                         const p = ent.mesh.position.clone().project(state.camera);
+                         const rect = containerRef.current.getBoundingClientRect();
+                         const sx = (p.x * 0.5 + 0.5) * rect.width;
+                         const sy = (-(p.y * 0.5) + 0.5) * rect.height;
+                         
+                         let points = 10;
+                         // Check material for bonus
+                         if (ent.mesh instanceof Mesh && ent.mesh.material instanceof MeshPhysicalMaterial) {
+                             points = 50; // Glass bonus
+                         }
+                         onScore(points, {x: sx, y: sy});
+
+                         if (navigator.vibrate) navigator.vibrate(20);
+                         state.hitStopTimer = 0.05;
+                         state.shakeStrength = 0.1; 
+                         
+                         shatterEntity(ent, hits[0].point);
+                     }
+                 }
+             }
+
+             state.lastMouse.copy(currentPos);
+        };
+
         // --- Game Loop ---
         const tick = (time: number) => {
             const state = engine.current;
@@ -494,6 +688,33 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
 
             let dt = Math.min((time - state.lastTime) / 1000, 0.1);
             state.lastTime = time;
+
+            // --- Hand Tracking Update ---
+            if (configRef.current.useHandTracking && state.handLandmarker && videoRef.current && videoRef.current.readyState >= 2) {
+                if (videoRef.current.currentTime !== state.lastVideoTime) {
+                    state.lastVideoTime = videoRef.current.currentTime;
+                    const detections = state.handLandmarker.detectForVideo(videoRef.current, performance.now());
+                    
+                    if (detections.landmarks && detections.landmarks.length > 0) {
+                        const hand = detections.landmarks[0];
+                        const indexTip = hand[8]; // Index 8 is Index Finger Tip
+                        
+                        if (indexTip) {
+                            // Map Hand Coords (0-1) to Screen Normalized Device Coords (-1 to 1)
+                            // Webcam input is mirrored in UI, so 1-x.
+                            const nx = (1 - indexTip.x) * 2 - 1; 
+                            const ny = -(indexTip.y) * 2 + 1;
+                            
+                            processSlashInput(nx, ny);
+                        }
+                    } else {
+                        // Reset trail if hand lost? Optional.
+                        state.lastMouse = null;
+                        state.trailNodes = [];
+                    }
+                }
+            }
+
 
             // Physics Step
             if (state.hitStopTimer > 0) {
@@ -527,8 +748,8 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                 const ent = state.entities[i];
                 
                 // Sync Visuals
-                ent.mesh.position.copy(ent.body.position as unknown as THREE.Vector3);
-                ent.mesh.quaternion.copy(ent.body.quaternion as unknown as THREE.Quaternion);
+                ent.mesh.position.copy(ent.body.position as unknown as Vector3);
+                ent.mesh.quaternion.copy(ent.body.quaternion as unknown as Quaternion);
 
                 // Boundary Check
                 if (ent.body.position.y < -20) {
@@ -543,8 +764,8 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             }
 
             // 2.5 Bomb Fuse Sparks
-            const fireColors = [new THREE.Color('#FF2400'), new THREE.Color('#FF4500'), new THREE.Color('#FFA500'), new THREE.Color('#FFD700')];
-            const fuseWorldPos = new THREE.Vector3();
+            const fireColors = [new Color('#FF2400'), new Color('#FF4500'), new Color('#FFA500'), new Color('#FFD700')];
+            const fuseWorldPos = new Vector3();
             for (const ent of state.entities) {
                 if (ent.active && ent.type === 'BOMB' && ent.fuseTipOffset) {
                     // Calculate world position of the fuse tip
@@ -557,7 +778,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                         const life = 0.4 + Math.random() * 0.4; // longer life for a fuller flame
                         state.particles.push({
                             position: fuseWorldPos.clone(),
-                            velocity: new THREE.Vector3(
+                            velocity: new Vector3(
                                 (Math.random() - 0.5) * 0.8,
                                 1.5 + Math.random() * 2.0, // more upward velocity
                                 (Math.random() - 0.5) * 0.8
@@ -572,7 +793,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             }
 
             // 3. Particles
-            const dummy = new THREE.Object3D();
+            const dummy = new Object3D();
             let particleIdx = 0;
             const gravity = configRef.current.gravity;
 
@@ -644,6 +865,8 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
 
         // --- Interaction ---
         const handlePointerMove = (e: MouseEvent | TouchEvent) => {
+             if (configRef.current.useHandTracking) return; // Disable mouse when hand tracking active
+
              const state = engine.current;
              if (!state.camera || !containerRef.current || configRef.current.gameOver) return;
 
@@ -660,76 +883,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
              const nx = ((cx - rect.left) / rect.width) * 2 - 1;
              const ny = -((cy - rect.top) / rect.height) * 2 + 1;
              
-             // Unproject for 3D Trail
-             const vec = new THREE.Vector3(nx, ny, 0.5);
-             vec.unproject(state.camera);
-             const dir = vec.sub(state.camera.position).normalize();
-             const distance = -state.camera.position.z / dir.z; // Intersection with Z=0 plane
-             const worldPos = state.camera.position.clone().add(dir.multiplyScalar(distance));
-
-             // Add Trail Node
-             state.trailNodes.unshift({ position: worldPos, life: 1.0 });
-             if (state.trailNodes.length > 30) state.trailNodes.pop();
-
-             const currentPos = new THREE.Vector2(nx, ny);
-
-             if (!state.lastMouse) {
-                 state.lastMouse = currentPos.clone();
-                 return;
-             }
-
-             // Raycasting
-             state.raycaster.setFromCamera(currentPos, state.camera);
-             
-             // Collect target meshes
-             const targets: THREE.Object3D[] = [];
-             state.entities.forEach(e => {
-                 if (e.active && e.type !== 'DEBRIS') {
-                    targets.push(e.mesh instanceof THREE.Group ? e.mesh.children[0] : e.mesh);
-                 }
-             });
-
-             const hits = state.raycaster.intersectObjects(targets, true); // Recursive true for groups
-
-             if (hits.length > 0) {
-                 // Find the parent entity of the hit mesh
-                 const hitObj = hits[0].object;
-                 const ent = state.entities.find(e => 
-                    e.mesh === hitObj || 
-                    (e.mesh instanceof THREE.Group && e.mesh.children.includes(hitObj))
-                 );
-
-                 if (ent && ent.active) {
-                     // HIT
-                     if (ent.type === 'BOMB') {
-                         onBomb();
-                         setFlash('red');
-                         setTimeout(() => setFlash(null), 100);
-                         state.shakeStrength = 1.2; 
-                         shatterEntity(ent, hits[0].point);
-                     } else {
-                         // Score
-                         const p = ent.mesh.position.clone().project(state.camera);
-                         const sx = (p.x * 0.5 + 0.5) * rect.width;
-                         const sy = (-(p.y * 0.5) + 0.5) * rect.height;
-                         
-                         let points = 10;
-                         // Check material for bonus
-                         if (ent.mesh instanceof THREE.Mesh && ent.mesh.material instanceof THREE.MeshPhysicalMaterial) {
-                             points = 50; // Glass bonus
-                         }
-                         onScore(points, {x: sx, y: sy});
-
-                         if (navigator.vibrate) navigator.vibrate(20);
-                         state.hitStopTimer = 0.05;
-                         state.shakeStrength = 0.1; 
-                         
-                         shatterEntity(ent, hits[0].point);
-                     }
-                 }
-             }
-
-             state.lastMouse.copy(currentPos);
+             processSlashInput(nx, ny);
         };
 
         const handlePointerLeave = () => {
@@ -780,10 +934,50 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                 height: '100%', 
                 position: 'relative', 
                 overflow: 'hidden', 
-                cursor: config.gameOver ? 'default' : 'none',
+                cursor: config.gameOver || config.useHandTracking ? 'default' : 'none',
                 backgroundColor: theme.Color.Base.Surface[1]
             }}
         >
+            {/* Hand Tracking Video PIP */}
+            {config.useHandTracking && (
+                <div style={{
+                    position: 'absolute',
+                    bottom: '20px',
+                    right: '20px',
+                    width: '160px',
+                    height: '120px',
+                    borderRadius: theme.radius['Radius.M'],
+                    overflow: 'hidden',
+                    zIndex: 100,
+                    border: `2px solid ${handTrackingReady ? theme.Color.Success.Content[1] : theme.Color.Base.Surface[3]}`,
+                    backgroundColor: 'black',
+                    boxShadow: theme.effects['Effect.Shadow.Drop.3']
+                }}>
+                    <video 
+                        ref={videoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        style={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'cover',
+                            transform: 'scaleX(-1)' // Mirroring
+                        }}
+                    />
+                    {!handTrackingReady && (
+                        <div style={{
+                            position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            backgroundColor: 'rgba(0,0,0,0.7)', color: 'white', fontSize: '10px'
+                        }}>
+                            INITIALIZING...
+                        </div>
+                    )}
+                </div>
+            )}
+
+
             {/* SCORE LAYER - Z-Index 0 (Behind Canvas which is Z-Index 1) */}
             <div style={{
                 position: 'absolute',
