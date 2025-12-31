@@ -88,7 +88,7 @@ const MetaPrototype = () => {
       // Basic validation could be added here
       handleConfigChange(newConfig);
       logEvent("SUCCESS: Telemetry synced with system.");
-    } catch (error) {
+    } catch (error: any) {
       logEvent(`ERROR: Invalid JSON format. ${error.message}`);
       console.error("JSON Parse Error:", error);
     }

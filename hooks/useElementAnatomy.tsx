@@ -91,7 +91,7 @@ export const useElementAnatomy = (
       let firstChildRect: NormalizedRect | null = null;
       let lastChildRect: NormalizedRect | null = null;
 
-      Object.entries(selectors).forEach(([key, selector]) => {
+      for (const [key, selector] of Object.entries(selectors)) {
         const child = element.querySelector<HTMLElement>(selector);
         if (child) {
           const childRect = child.getBoundingClientRect();
@@ -112,7 +112,7 @@ export const useElementAnatomy = (
         } else {
           childrenMetrics[key] = null;
         }
-      });
+      }
 
       // 6. Calculate Internal Gap (Distance between first and last element edges)
       // Note: This naive approach assumes horizontal flow of two items.
