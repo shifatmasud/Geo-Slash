@@ -1,98 +1,47 @@
-# React 18 Meta Prototype & Design System Starter Kit
+# Geo-Slash: React 18 3D Game
 
-[**Remix on AI Studio**](https://ai.studio/apps/drive/1WYqqbd5DDER7bue4-jyHmwA6AC6Fn65w?fullscreenApplet=true)
+Three.js 3D geometry slash game inspired by Fruit Ninja, built with React 18, Framer Motion, and Cannon.js.
 
-This is a starter project for building modern, theme-aware React applications. It's set up with a modular structure, a powerful design system, and is ready for you to integrate the Gemini API.
-
-## Project Scan Sheet
+## Tech Stack
 
 | Category | Details |
 | :--- | :--- |
-| **Framework** | React 18.2.0 (ESM via `importmap`) |
-| **Styling** | CSS-in-JS (JS Objects), Semantic Design Tokens, No CSS Modules/Tailwind |
-| **Animation** | Framer Motion 12.x (Spring Physics, Layout Animations) |
-| **Typography** | Bebas Neue (Display), Comic Neue (Quotes), Inter (UI), Victor Mono (Code) |
-| **Icons** | Phosphor Icons (Web Component) |
-| **State Management** | React Context (`Theme`, `Breakpoint`), Local State, History Stack (Undo/Redo) |
-| **Architecture** | Atomic-based: `Core` → `Package` → `Section` → `Page` → `App` |
-| **Key Components** | Floating Windows, Draggable Dock, State Layer (Ripple), Element Anatomy Inspector |
-| **Theme System** | Light/Dark Modes, Responsive Tokens, Feedback States (Success, Warning, Error, Signal) |
-| **Inputs** | Range Sliders, Color Pickers, Toggles, Selects, TextAreas |
-| **Visuals** | Confetti System, Blueprint Overlays, Token Badges, Glassmorphism |
+| **Framework** | React 18.2.0 |
+| **Build Tool** | Vite |
+| **Styling** | CSS-in-JS (JS Objects), Semantic Design Tokens |
+| **Animation** | Framer Motion 12.x |
+| **Physics** | Cannon-es |
+| **3D Engine** | Three.js |
+| **Vision** | MediaPipe Tasks Vision |
+| **Deployment** | Vercel Ready |
 
-## What's Inside? (ELI10 Version)
+## How to Run
 
-Imagine you're building with LEGOs. This project gives you a super organized box of special LEGO pieces to build an amazing app.
+1.  **Install Dependencies**
+    ```bash
+    npm install
+    ```
 
--   **`index.html`**: The front door to our app.
--   **`index.tsx`**: The main brain of the app.
--   **`importmap.js`**: A map that tells our app where to find its tools (like React).
--   **`Theme.tsx`**: The "master closet" for our app's style (colors, fonts, etc.).
--   **`hooks/`**: Special tools (custom hooks).
-    -   `useBreakpoint.tsx`: Checks if you're on a phone, tablet, or desktop.
-    -   `useElementAnatomy.tsx`: A special ruler that precisely measures a component and its inner parts.
--   **`types/`**: A dictionary for our app's data shapes.
-    -   `index.tsx`: Defines what a "Window" or a "Log Entry" looks like.
--   **`components/`**: The LEGO pieces themselves, organized by complexity!
-    -   **`Core/`**: The most basic, single-purpose pieces (Button, Input, Toggle, etc.).
-    -   **`Package/`**: Combines Core pieces into something more useful (`ControlPanel`, `FloatingWindow`).
-    -   **`Section/`**: A whole section of the app (the `Dock` at the bottom, the main `Stage`).
-    -   **`Page/`**: A full screen you see (`Welcome` page).
-    -   **`App/`**: The complete, running application (`MetaPrototype`).
--   **`README.md`**: This file! Your friendly guide.
--   **`LLM.md`**: Special instructions for AI helpers.
--   **`noteBook.md`**: A diary of tasks and progress.
--   **`bugReport.md`**: A list of bugs to fix.
+2.  **Start Development Server**
+    ```bash
+    npm run dev
+    ```
 
-## Directory Tree
+3.  **Build for Production**
+    ```bash
+    npm run build
+    ```
 
-```
-.
-├── components/
-│   ├── App/
-│   │   └── MetaPrototype.tsx
-│   ├── Core/
-│   │   ├── Button.tsx
-│   │   ├── ColorPicker.tsx
-│   │   ├── Confetti.tsx
-│   │   ├── DockIcon.tsx
-│   │   ├── Input.tsx
-│   │   ├── LogEntry.tsx
-│   │   ├── RangeSlider.tsx
-│   │   ├── Select.tsx
-│   │   ├── StateLayer.tsx
-│   │   ├── TextArea.tsx
-│   │   ├── ThemeToggleButton.tsx
-│   │   └── Toggle.tsx
-│   ├── Package/
-│   │   ├── CodePanel.tsx
-│   │   ├── ConsolePanel.tsx
-│   │   ├── ControlPanel.tsx
-│   │   ├── FloatingWindow.tsx
-│   │   └── UndoRedo.tsx
-│   ├── Page/
-│   │   └── Welcome.tsx
-│   └── Section/
-│       ├── Dock.tsx
-│       └── Stage.tsx
-├── hooks/
-│   ├── useBreakpoint.tsx
-│   └── useElementAnatomy.tsx
-├── types/
-│   └── index.tsx
-├── README.md
-├── LLM.md
-├── noteBook.md
-├── bugReport.md
-├── Theme.tsx
-├── importmap.js
-├── index.html
-├── index.tsx
-├── metadata.json
-```
+## Project Structure
 
-## How to Get Started
+-   **`components/`**: Modular component architecture (`Core`, `Package`, `Section`, `Page`, `App`).
+-   **`hooks/`**: Custom React hooks.
+-   **`types/`**: TypeScript definitions.
+-   **`Theme.tsx`**: Central design system and theme provider.
 
-1.  Open the `index.html` file in a modern web browser.
-2.  That's it! The app will run.
-3.  Start changing the code in the `.tsx` files to build your own features.
+## Game Features
+
+-   **3D Slicing**: Slash through geometric shapes.
+-   **Physics**: Realistic gravity and collisions.
+-   **Hand Tracking**: Optional webcam control via MediaPipe.
+-   **Meta Prototype**: Edit game config JSON in real-time.
