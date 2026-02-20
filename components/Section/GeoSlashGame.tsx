@@ -305,16 +305,16 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
         scene.add(particleMesh);
 
         // --- 6. Trail Mesh ---
-        // Using a strip of triangles for a smooth trail
-        const TRAIL_LENGTH = 30;
+        const MAX_TRAIL_SEGMENTS = 30;
         const trailGeometry = new BufferGeometry();
-        const positions = new Float32Array(TRAIL_LENGTH * 3 * 2); // 2 vertices per segment
+        // Each segment is a quad (2 triangles = 6 vertices), each vertex has 3 components (x,y,z)
+        const positions = new Float32Array(MAX_TRAIL_SEGMENTS * 6 * 3);
         trailGeometry.setAttribute('position', new BufferAttribute(positions, 3));
         const trailMaterial = new MeshBasicMaterial({
-            color: theme.Color.Accent.Content[1],
+            color: theme.Color.Base.Content[3], // Silver
             side: DoubleSide,
             transparent: true,
-            opacity: 0.6,
+            opacity: 0.8, // Brighter for glow
             blending: AdditiveBlending,
         });
         const trailMesh = new Mesh(trailGeometry, trailMaterial);
@@ -617,7 +617,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
 
              // Add Trail Node
              state.trailNodes.unshift({ position: worldPos, life: 1.0 });
-             if (state.trailNodes.length > 30) state.trailNodes.pop();
+             if (state.trailNodes.length > MAX_TRAIL_SEGMENTS + 1) state.trailNodes.pop();
 
              const currentPos = new Vector2(nx, ny);
 
@@ -823,38 +823,70 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
 
             // 4. Trail Update
             const trailNodes = state.trailNodes;
-             // Age nodes
+            const trailMesh = state.trailMesh;
+
+            // Age nodes
             for (let i = trailNodes.length - 1; i >= 0; i--) {
                 trailNodes[i].life -= dt * 5.0; // Fade speed
                 if (trailNodes[i].life <= 0) trailNodes.splice(i, 1);
             }
-            // Update Mesh Geometry
-            if (state.trailMesh && trailNodes.length > 1) {
-                const positions = state.trailMesh.geometry.attributes.position.array as Float32Array;
-                let idx = 0;
-                for (let i = 0; i < trailNodes.length - 1; i++) {
-                    if (idx >= positions.length) break;
-                    const curr = trailNodes[i];
-                    const next = trailNodes[i+1];
-                    // Simple ribbon expansion logic (perpendicular vector)
-                    // Simplified: just a thick line approach
-                    const w = 0.3 * curr.life;
-                    
-                    positions[idx++] = curr.position.x;
-                    positions[idx++] = curr.position.y - w;
-                    positions[idx++] = curr.position.z;
 
-                    positions[idx++] = curr.position.x;
-                    positions[idx++] = curr.position.y + w;
-                    positions[idx++] = curr.position.z;
+            // Update Mesh Geometry
+            if (trailMesh && trailNodes.length > 1) {
+                const positions = trailMesh.geometry.attributes.position.array as Float32Array;
+                const direction = new Vector3();
+                const perpendicular = new Vector3();
+                let vertexCount = 0;
+
+                for (let i = 0; i < trailNodes.length - 1; i++) {
+                    const currentPoint = trailNodes[i];
+                    const nextPoint = trailNodes[i + 1];
+
+                    direction.subVectors(nextPoint.position, currentPoint.position);
+                    perpendicular.set(-direction.y, direction.x, 0).normalize();
+
+                    const t = i / (trailNodes.length - 2); // Normalized position
+                    const taper = Math.sin(t * Math.PI); // Pointy at start/end
+                    const widthCurrent = 0.3 * currentPoint.life * taper;
+                    const widthNext = 0.3 * nextPoint.life * taper;
+
+                    const p1 = currentPoint.position.clone().add(perpendicular.clone().multiplyScalar(widthCurrent));
+                    const p2 = currentPoint.position.clone().sub(perpendicular.clone().multiplyScalar(widthCurrent));
+                    const p3 = nextPoint.position.clone().add(perpendicular.clone().multiplyScalar(widthNext));
+                    const p4 = nextPoint.position.clone().sub(perpendicular.clone().multiplyScalar(widthNext));
+
+                    const offset = i * 18; // 6 vertices * 3 components
+
+                    // Triangle 1 (p2, p1, p3)
+                    positions[offset + 0] = p2.x;
+                    positions[offset + 1] = p2.y;
+                    positions[offset + 2] = p2.z;
+                    positions[offset + 3] = p1.x;
+                    positions[offset + 4] = p1.y;
+                    positions[offset + 5] = p1.z;
+                    positions[offset + 6] = p3.x;
+                    positions[offset + 7] = p3.y;
+                    positions[offset + 8] = p3.z;
+
+                    // Triangle 2 (p2, p3, p4)
+                    positions[offset + 9] = p2.x;
+                    positions[offset + 10] = p2.y;
+                    positions[offset + 11] = p2.z;
+                    positions[offset + 12] = p3.x;
+                    positions[offset + 13] = p3.y;
+                    positions[offset + 14] = p3.z;
+                    positions[offset + 15] = p4.x;
+                    positions[offset + 16] = p4.y;
+                    positions[offset + 17] = p4.z;
+                    
+                    vertexCount += 6;
                 }
-                // Zero out remaining
-                for (let k = idx; k < positions.length; k++) positions[k] = 0;
-                
-                state.trailMesh.geometry.attributes.position.needsUpdate = true;
-                state.trailMesh.visible = true;
-            } else if (state.trailMesh) {
-                state.trailMesh.visible = false;
+
+                trailMesh.geometry.setDrawRange(0, vertexCount);
+                trailMesh.geometry.attributes.position.needsUpdate = true;
+                trailMesh.visible = vertexCount > 0;
+            } else if (trailMesh) {
+                trailMesh.visible = false;
             }
 
             state.renderer.render(state.scene, state.camera);
