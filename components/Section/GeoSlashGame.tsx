@@ -19,6 +19,10 @@ import {
     SphereGeometry,
     TetrahedronGeometry,
     CylinderGeometry,
+    CircleGeometry,
+    PlaneGeometry,
+    IcosahedronGeometry,
+    Plane,
     MeshBasicMaterial,
     MeshStandardMaterial,
     MeshPhysicalMaterial,
@@ -35,6 +39,7 @@ import {
     Quaternion,
     Material
 } from 'three';
+import { CSG } from 'three-csg-ts';
 import * as CANNON from 'cannon-es';
 import { useTheme } from '../../Theme.tsx';
 import { GameConfig } from '../../types/index.tsx';
@@ -61,6 +66,7 @@ interface GameEntity {
     type: 'TARGET' | 'BOMB' | 'DEBRIS';
     active: boolean;
     fuseTipOffset?: Vector3;
+    shapeType?: 'cube' | 'pyramid' | 'sphere';
 }
 
 interface Particle {
@@ -119,6 +125,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
         raycaster: new Raycaster(),
         mouse: new Vector2(),
         lastMouse: null as Vector2 | null,
+        lastSlashNormal: new Vector3(1, 0, 0),
         
         // Hand Tracking
         handLandmarker: null as HandLandmarker | null,
@@ -237,6 +244,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             alpha: true, // Enable transparency
             powerPreference: 'high-performance'
         });
+        renderer.localClippingEnabled = true;
         renderer.setSize(width, height);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.toneMapping = ACESFilmicToneMapping;
@@ -279,15 +287,47 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             cube: new BoxGeometry(1, 1, 1),
             // Square based pyramid: Cone with 4 radial segments
             pyramid: new ConeGeometry(0.8, 1.4, 4, 1), 
-            sphere: new SphereGeometry(0.6, 32, 32),
-            // Debris Shards
-            shardBox: new BoxGeometry(0.5, 0.5, 0.5),
-            shardTetra: new TetrahedronGeometry(0.4),
+            // Use lower poly sphere to prevent CSG freezing
+            sphere: new SphereGeometry(0.6, 12, 12),
             // BOMB PARTS
-            bombBody: new SphereGeometry(0.65, 32, 32),
-            bombCap: new CylinderGeometry(0.2, 0.25, 0.25, 16),
+            bombBody: new SphereGeometry(0.65, 16, 16),
+            bombCap: new CylinderGeometry(0.2, 0.25, 0.25, 12),
             bombFuse: new CylinderGeometry(0.04, 0.04, 0.4, 8),
         };
+
+        // --- Precompute Shards (Voxel Cubes & Pyramids) ---
+        const createShardGeom = (size: number) => {
+            const isCube = Math.random() > 0.5;
+            let geom;
+            
+            if (isCube) {
+                // Tiny voxel cube
+                const s = size * (0.4 + Math.random() * 0.6);
+                geom = new BoxGeometry(s, s, s);
+            } else {
+                // Tiny pyramid
+                const r = size * (0.5 + Math.random() * 0.5);
+                const h = size * (0.6 + Math.random() * 0.8);
+                geom = new ConeGeometry(r, h, 4, 1);
+            }
+
+            // Random rotation to make them look chaotic
+            geom.rotateX(Math.random() * Math.PI);
+            geom.rotateY(Math.random() * Math.PI);
+            geom.rotateZ(Math.random() * Math.PI);
+            
+            return geom;
+        };
+
+        const shardTypes: ('cube' | 'pyramid' | 'sphere')[] = ['cube', 'pyramid', 'sphere'];
+        shardTypes.forEach(type => {
+            const count = type === 'pyramid' ? 6 : 8;
+            for (let i = 0; i < count; i++) {
+                // @ts-ignore
+                geoms[`${type}_shard_${i}`] = createShardGeom(type === 'pyramid' ? 0.35 : 0.4);
+            }
+        });
+
         geoms.pyramid.rotateX(Math.PI); // Point up naturally
         engine.current.geometries = geoms;
 
@@ -420,37 +460,58 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             return group;
         };
 
+        const spawnShard = (pos: Vector3, vel: Vector3, color: string, isGlass: boolean, geometry: BufferGeometry) => {
+            const material = getMaterial(color, isGlass ? 'GLASS' : 'PLASTIC');
+            const mesh = new Mesh(geometry, material);
+            mesh.position.copy(pos);
+            
+            // Physics - Using a small sphere collider for stable shard physics
+            const shape = new CANNON.Sphere(0.2); 
+            const body = new CANNON.Body({ mass: 0.2, shape });
+            body.position.copy(pos as unknown as CANNON.Vec3);
+            body.velocity.copy(vel as unknown as CANNON.Vec3);
+            body.angularVelocity.set(
+                (Math.random() - 0.5) * 20, 
+                (Math.random() - 0.5) * 20, 
+                (Math.random() - 0.5) * 20
+            );
+            
+            scene.add(mesh);
+            world.addBody(body);
+            
+            engine.current.entities.push({
+                id: Math.random(),
+                mesh,
+                body,
+                type: 'DEBRIS',
+                active: true
+            });
+        };
+
         const spawnEntity = (isDebris = false, debrisProps?: { pos: Vector3, vel: Vector3, color: string, isGlass: boolean }) => {
             let mesh: Object3D;
             let body: CANNON.Body;
             let type: 'TARGET' | 'BOMB' | 'DEBRIS' = 'TARGET';
             let color = '#ffffff';
+            let shapeType: 'cube' | 'pyramid' | 'sphere' | undefined;
 
             if (isDebris && debrisProps) {
+                // This branch is now largely handled by spawnShard for targets, 
+                // but kept for generic debris if needed.
                 type = 'DEBRIS';
                 color = debrisProps.color;
-                const shapes = ['shardBox', 'shardTetra'];
-                const shapeKey = shapes[Math.floor(Math.random() * shapes.length)];
-                // @ts-ignore
-                const geometry = geoms[shapeKey];
+                const geometry = createShardGeom(0.3);
                 const material = getMaterial(color, debrisProps.isGlass ? 'GLASS' : 'PLASTIC');
                 mesh = new Mesh(geometry, material);
                 
-                const size = 0.5 * (0.5 + Math.random() * 0.5); // Random small size
+                const size = 0.5 * (0.5 + Math.random() * 0.5); 
                 mesh.scale.setScalar(size);
                 
-                // Box approximation for debris physics
                 const shape = new CANNON.Box(new CANNON.Vec3(size/2, size/2, size/2));
                 body = new CANNON.Body({ mass: 0.5, shape });
                 
                 body.position.copy(debrisProps.pos as unknown as CANNON.Vec3);
-                // Add randomness to spawn position to prevent overlap
-                body.position.x += (Math.random() - 0.5) * 0.5;
-                body.position.y += (Math.random() - 0.5) * 0.5;
-                body.position.z += (Math.random() - 0.5) * 0.5;
-
                 body.velocity.copy(debrisProps.vel as unknown as CANNON.Vec3);
-                // Add tumble
                 body.angularVelocity.set(Math.random()*10, Math.random()*10, Math.random()*10);
 
             } else {
@@ -473,10 +534,11 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                 if (isBomb) {
                     mesh = createBombVisual();
                     mesh.scale.setScalar(size);
-                    body = createBody('sphere', size * 1.3); // Slightly larger collider for bomb
+                    body = createBody('sphere', size * 1.3); 
                 } else {
                     const shapes = ['cube', 'pyramid', 'sphere'];
                     const shapeKey = shapes[Math.floor(Math.random() * shapes.length)] as 'cube' | 'pyramid' | 'sphere';
+                    shapeType = shapeKey;
                     const geometry = geoms[shapeKey];
                     const material = getMaterial(color, isGlass ? 'GLASS' : 'PLASTIC');
                     mesh = new Mesh(geometry, material);
@@ -486,7 +548,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
 
                 // Initial Physics State
                 const x = (Math.random() - 0.5) * 10;
-                const y = -14; // Start lower
+                const y = -14; 
                 body.position.set(x, y, 0);
 
                 const targetX = (Math.random() - 0.5) * 6;
@@ -511,6 +573,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                 body,
                 type,
                 active: true,
+                shapeType,
                 fuseTipOffset: type === 'BOMB' ? FUSE_TIP_OFFSET : undefined
             });
         };
@@ -551,6 +614,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
             world.removeBody(entity.body);
             
             const entityPos = new Vector3(entity.body.position.x, entity.body.position.y, entity.body.position.z);
+            const entityQuat = new Quaternion(entity.body.quaternion.x, entity.body.quaternion.y, entity.body.quaternion.z, entity.body.quaternion.w);
 
             if (entity.type === 'BOMB') {
                 spawnExplosionParticles(entityPos);
@@ -565,20 +629,96 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                     if (mat.color) color = '#' + mat.color.getHexString();
                     isGlass = mat instanceof MeshPhysicalMaterial;
                 }
-    
-                // Spawn Shards (Debris)
-                const shardCount = 4 + Math.floor(Math.random() * 3);
-                const originalVel = new Vector3(entity.body.velocity.x, entity.body.velocity.y, entity.body.velocity.z);
-                
-                for (let i = 0; i < shardCount; i++) {
-                    const spread = 8;
-                    const debrisVel = originalVel.clone().add(new Vector3(
-                        (Math.random() - 0.5) * spread,
-                        (Math.random() - 0.5) * spread,
-                        (Math.random() - 0.5) * spread
-                    ));
-                    
-                    spawnEntity(true, { pos: entityPos, vel: debrisVel, color, isGlass });
+
+                // --- REALISTIC SLICE LOGIC (CSG) ---
+                const normal = engine.current.lastSlashNormal.clone();
+                const targetMesh = entity.mesh instanceof Group ? entity.mesh.children[0] as Mesh : entity.mesh as Mesh;
+                targetMesh.updateMatrixWorld();
+
+                // Create cutter
+                const halfSpaceGeo = new BoxGeometry(20, 20, 20);
+                halfSpaceGeo.translate(0, 0, 10); // Face at Z=0
+
+                const cutter1 = new Mesh(halfSpaceGeo);
+                cutter1.position.copy(entityPos);
+                cutter1.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), normal);
+                cutter1.updateMatrixWorld();
+
+                const cutter2 = new Mesh(halfSpaceGeo);
+                cutter2.position.copy(entityPos);
+                cutter2.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), normal.clone().negate());
+                cutter2.updateMatrixWorld();
+
+                try {
+                    const bspEntity = CSG.fromMesh(targetMesh);
+                    const bspCutter1 = CSG.fromMesh(cutter1);
+                    const bspCutter2 = CSG.fromMesh(cutter2);
+
+                    const bspHalf1 = bspEntity.subtract(bspCutter1);
+                    const bspHalf2 = bspEntity.subtract(bspCutter2);
+
+                    const half1Mesh = CSG.toMesh(bspHalf1, targetMesh.matrixWorld);
+                    const half2Mesh = CSG.toMesh(bspHalf2, targetMesh.matrixWorld);
+
+                    [half1Mesh, half2Mesh].forEach((halfMesh, index) => {
+                        // Material
+                        halfMesh.material = targetMesh.material;
+                        halfMesh.matrixAutoUpdate = true;
+
+                        // Create Physics Body
+                        const body = new CANNON.Body({
+                            mass: 0.5,
+                            shape: new CANNON.Sphere(configRef.current.objectSize / 2) // Approximation
+                        });
+                        
+                        // Start at original position/rotation
+                        body.position.copy(entityPos as unknown as CANNON.Vec3);
+                        body.quaternion.copy(entityQuat as unknown as CANNON.Quaternion);
+                        
+                        // Push apart
+                        const forceDir = index === 0 ? normal.clone().negate() : normal.clone();
+                        const pushForce = forceDir.multiplyScalar(12);
+                        
+                        body.velocity.set(
+                            entity.body.velocity.x + pushForce.x,
+                            entity.body.velocity.y + pushForce.y,
+                            entity.body.velocity.z + pushForce.z
+                        );
+                        
+                        body.angularVelocity.set(
+                            entity.body.angularVelocity.x + (Math.random() - 0.5) * 15,
+                            entity.body.angularVelocity.y + (Math.random() - 0.5) * 15,
+                            entity.body.angularVelocity.z + (Math.random() - 0.5) * 15
+                        );
+
+                        scene.add(halfMesh);
+                        world.addBody(body);
+                        engine.current.entities.push({
+                            id: Math.random(),
+                            mesh: halfMesh,
+                            body: body,
+                            type: 'DEBRIS',
+                            active: true
+                        });
+                    });
+                } catch (e) {
+                    console.error("CSG Slice failed", e);
+                }
+
+                // Add a few small shards for "juice"
+                const shapeType = entity.shapeType || 'cube';
+                for (let i = 0; i < 4; i++) {
+                    // @ts-ignore
+                    const shardGeom = geoms[`${shapeType}_shard_${i}`];
+                    if (shardGeom) {
+                        const spread = 10;
+                        const shardVel = new Vector3(
+                            entity.body.velocity.x + (Math.random() - 0.5) * spread,
+                            entity.body.velocity.y + (Math.random() - 0.5) * spread,
+                            entity.body.velocity.z + (Math.random() - 0.5) * spread
+                        );
+                        spawnShard(entityPos.clone(), shardVel, color, isGlass, shardGeom);
+                    }
                 }
 
                 spawnParticles(entityPos, color);
@@ -618,6 +758,15 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
              // Add Trail Node
              state.trailNodes.unshift({ position: worldPos, life: 1.0 });
              if (state.trailNodes.length > MAX_TRAIL_SEGMENTS + 1) state.trailNodes.pop();
+
+             if (state.trailNodes.length > 1) {
+                 const p1 = state.trailNodes[0].position;
+                 const p2 = state.trailNodes[1].position;
+                 const slashDir = new Vector3().subVectors(p1, p2).normalize();
+                 if (slashDir.lengthSq() > 0.001) {
+                    state.lastSlashNormal.crossVectors(slashDir, new Vector3(0, 0, 1)).normalize();
+                 }
+             }
 
              const currentPos = new Vector2(nx, ny);
 
