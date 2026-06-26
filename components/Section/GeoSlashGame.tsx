@@ -640,12 +640,12 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                 halfSpaceGeo.translate(0, 0, 10); // Face at Z=0
 
                 const cutter1 = new Mesh(halfSpaceGeo);
-                cutter1.position.copy(entityPos);
+                cutter1.position.copy(hitPoint);
                 cutter1.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), normal);
                 cutter1.updateMatrixWorld();
 
                 const cutter2 = new Mesh(halfSpaceGeo);
-                cutter2.position.copy(entityPos);
+                cutter2.position.copy(hitPoint);
                 cutter2.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), normal.clone().negate());
                 cutter2.updateMatrixWorld();
 
@@ -717,11 +717,11 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                             entity.body.velocity.y + (Math.random() - 0.5) * spread,
                             entity.body.velocity.z + (Math.random() - 0.5) * spread
                         );
-                        spawnShard(entityPos.clone(), shardVel, color, isGlass, shardGeom);
+                        spawnShard(hitPoint.clone(), shardVel, color, isGlass, shardGeom);
                     }
                 }
 
-                spawnParticles(entityPos, color);
+                spawnParticles(hitPoint, color);
             }
         };
 
@@ -752,6 +752,7 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
              const vec = new Vector3(nx, ny, 0.5);
              vec.unproject(state.camera);
              const dir = vec.sub(state.camera.position).normalize();
+             if (Math.abs(dir.z) < 0.0001) return;
              const distance = -state.camera.position.z / dir.z; // Intersection with Z=0 plane
              const worldPos = state.camera.position.clone().add(dir.multiplyScalar(distance));
 
@@ -992,9 +993,11 @@ const GeoSlashGame: React.FC<GeoSlashGameProps> = ({ config, onScore, onMiss, on
                     const nextPoint = trailNodes[i + 1];
 
                     direction.subVectors(nextPoint.position, currentPoint.position);
-                    perpendicular.set(-direction.y, direction.x, 0).normalize();
+                    if (direction.lengthSq() > 0.0001) {
+                        perpendicular.set(-direction.y, direction.x, 0).normalize();
+                    }
 
-                    const t = i / (trailNodes.length - 2); // Normalized position
+                    const t = i / (trailNodes.length - 1 || 1); // Normalized position
                     const taper = Math.sin(t * Math.PI); // Pointy at start/end
                     const widthCurrent = 0.3 * currentPoint.life * taper;
                     const widthNext = 0.3 * nextPoint.life * taper;
